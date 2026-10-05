@@ -92,6 +92,19 @@ load_data <- function() {
   )
 }
 
+# One query set for the life of the process. Sessions filter this in memory.
+DATA <- load_data()
+
+choice_vals <- function(x) sort(unique(na.omit(as.character(x))))
+DEVICE_CHOICES    <- choice_vals(DATA$funnel$device)
+PAGE_TYPE_CHOICES <- choice_vals(DATA$funnel$page_type)
+SOURCE_CHOICES    <- choice_vals(DATA$funnel$utm_source)
+VARIANT_CHOICES   <- choice_vals(DATA$funnel$variant_name)
+
+# Yesterday, so the range is never backwards on launch day.
+RANGE_END   <- Sys.Date() - 1
+RANGE_START <- if (RANGE_END < LAUNCH) RANGE_END - 6 else LAUNCH
+
 # ---------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------
@@ -123,6 +136,8 @@ theme_dash <- function() {
       panel.grid.major.x = element_blank(),
       axis.title = element_text(color = MUTED, size = 11),
       axis.text = element_text(color = MUTED),
+      plot.background = element_rect(fill = "transparent", color = NA),
+      panel.background = element_rect(fill = "transparent", color = NA),
       plot.margin = margin(8, 16, 8, 8)
     )
 }
@@ -141,22 +156,31 @@ funnel_plot <- function(s, color, include_cta = TRUE) {
   steps <- steps |>
     mutate(
       label = ifelse(step == "Clicked CTA" & n == 0,
-                     "Not tracked yet (wall_cta_click)",
+                     "0",
                      paste0(fmt_n(n), "  (", fmt_pct(n / steps$n[1]), " of readers)")),
       step = factor(step, levels = rev(step))
     )
   ggplot(steps, aes(n, step)) +
     geom_col(fill = color, width = 0.7) +
     geom_text(aes(label = label), hjust = -0.05, color = INK, size = 4) +
-    scale_x_continuous(expand = expansion(mult = c(0, 0.45))) +
+    scale_x_continuous(expand = expansion(mult = c(0, 0.58))) +
     labs(x = NULL, y = NULL) +
     theme_dash() +
     theme(panel.grid = element_blank(), axis.text.x = element_blank(),
           axis.text.y = element_text(color = INK, size = 12, face = "bold"))
 }
 
-kpi <- function(title, value, sub = NULL) {
-  value_box(title = title, value = value, p(sub, class = "text-muted small mb-0"))
+kpi <- function(title, value, sub = NULL, tone = c("red", "blue")) {
+  tone <- match.arg(tone)
+  value_box(
+    title = title,
+    value = value,
+    p(sub, class = "text-muted small mb-0"),
+    theme = value_box_theme(bg = "#FFFFFF", fg = INK),
+    min_height = "112px",
+    fill = TRUE,
+    class = paste("border-0 shadow-sm kpi-box", if (tone == "blue") "kpi-blue")
+  )
 }
 
 dt_table <- function(df, pct_cols = NULL, page_length = 10) {
@@ -183,123 +207,171 @@ segment_table <- function(df, dim, label) {
 # UI
 # ---------------------------------------------------------------------
 theme <- bs_theme(
-  version = 5, primary = RED, fg = INK, bg = "#FFFFFF",
-  base_font = font_google("Public Sans", wght = c(400, 600, 700))
+  version = 5, primary = RED, fg = INK, bg = "#F4F5F7",
+  base_font = font_google("Public Sans", wght = c(400, 500, 600, 700)),
+  heading_font = font_google("Public Sans", wght = c(600, 700))
 )
 
+card_head <- function(title, note) {
+  card_header(
+    class = "bg-transparent",
+    tags$div(
+      class = "card-head-text",
+      tags$div(title, class = "card-title"),
+      tags$div(note, class = "card-note")
+    )
+  )
+}
+
 card_plot <- function(title, note, id, height = 300) {
-  card(card_header(title), p(note, class = "text-muted small"),
-       plotOutput(id, height = height))
+  card(
+    class = "dash-card",
+    full_screen = TRUE,
+    card_head(title, note),
+    card_body(padding = 3, plotOutput(id, height = height))
+  )
 }
 card_table <- function(title, note, id) {
-  card(card_header(title), p(note, class = "text-muted small"), DTOutput(id))
+  card(
+    class = "dash-card",
+    card_head(title, note),
+    card_body(padding = 3, DTOutput(id))
+  )
 }
+
+dash_css <- "
+  .navbar { border-bottom: 1px solid rgba(23, 32, 42, 0.08); }
+  .navbar-updated { font-size: 0.82rem; color: #56606C; padding-right: 0.35rem; }
+  .bslib-sidebar-layout > .sidebar { border-right: 1px solid rgba(23, 32, 42, 0.08); }
+  .shiny-date-range-input .input-group { flex-wrap: nowrap; }
+  .shiny-date-range-input .form-control {
+    min-width: 0; padding: 0.35rem 0.4rem; font-size: 0.82rem;
+  }
+  .shiny-date-range-input .input-group-text { padding: 0.35rem 0.45rem; font-size: 0.78rem; }
+  .dash-card {
+    border: 1px solid rgba(23, 32, 42, 0.08) !important;
+    box-shadow: 0 1px 2px rgba(23, 32, 42, 0.04);
+  }
+  .dash-card > .card-header {
+    align-items: flex-start;
+    border-bottom: 1px solid rgba(23, 32, 42, 0.06);
+    padding: 0.9rem 1rem 0.75rem;
+  }
+  .card-head-text { min-width: 0; flex: 1 1 auto; }
+  .card-title { font-weight: 650; font-size: 1rem; color: #17202A; line-height: 1.3; }
+  .card-note { color: #56606C; font-size: 0.8rem; font-weight: 400; margin-top: 0.2rem; line-height: 1.35; }
+  .kpi-box .value-box-title { font-size: 0.8rem; font-weight: 600; line-height: 1.25; }
+  .kpi-box .value-box-value { font-size: 1.65rem; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+  .kpi-box { border-top: 3px solid #B50E28 !important; }
+  .kpi-box.kpi-blue { border-top-color: #2F5D8A !important; }
+  .dataTables_wrapper { font-size: 0.88rem; }
+  table.dataTable thead th { font-weight: 600; color: #17202A; }
+  .sidebar-note { color: #56606C; font-size: 0.78rem; line-height: 1.4; margin: 0.25rem 0 0; }
+  .section-label { font-size: 0.95rem; font-weight: 650; color: #17202A; margin-top: 0.35rem; }
+"
+theme <- bs_add_rules(theme, dash_css)
 
 ui <- page_navbar(
   title = "DC regwall launch",
+  window_title = "DC regwall launch",
   theme = theme,
   fillable = FALSE,
+  gap = "1.15rem",
+  padding = c("1.1rem", "1.25rem", "2rem", "1.25rem"),
+  navbar_options = navbar_options(bg = "#FFFFFF", theme = "light", underline = TRUE),
   sidebar = sidebar(
-    width = 260,
-    dateRangeInput("dates", "Date range", start = LAUNCH, end = Sys.Date() - 1),
-    selectizeInput("device", "Device", NULL, multiple = TRUE, options = list(placeholder = "All devices")),
-    selectizeInput("page_type", "Page type", NULL, multiple = TRUE, options = list(placeholder = "All page types")),
-    selectizeInput("utm_source", "Traffic source (UTM)", NULL, multiple = TRUE, options = list(placeholder = "All sources")),
-    selectizeInput("variant", "Variant", NULL, multiple = TRUE, options = list(placeholder = "All variants")),
-    actionButton("refresh", "Reload data", class = "btn-outline-secondary"),
-    textOutput("loaded_at", container = function(...) p(..., class = "text-muted small"))
+    width = 292,
+    bg = "#FFFFFF",
+    fg = INK,
+    gap = "0.85rem",
+    padding = "1rem",
+    resizable = FALSE,
+    dateRangeInput("dates", "Date range", start = RANGE_START, end = RANGE_END,
+                   max = Sys.Date(), width = "100%"),
+    selectizeInput("device", "Device", DEVICE_CHOICES, multiple = TRUE,
+                   width = "100%", options = list(placeholder = "All devices")),
+    selectizeInput("page_type", "Page type", PAGE_TYPE_CHOICES, multiple = TRUE,
+                   width = "100%", options = list(placeholder = "All types")),
+    selectizeInput("utm_source", "Traffic source", SOURCE_CHOICES, multiple = TRUE,
+                   width = "100%", options = list(placeholder = "All sources")),
+    selectizeInput("variant", "Variant", VARIANT_CHOICES, multiple = TRUE,
+                   width = "100%", options = list(placeholder = "All variants")),
+    p("Page type, source, and variant filter the wall charts. Session charts use the date range and device.",
+      class = "sidebar-note")
   ),
-  
-  # ---- Page 1 ----
+
   nav_panel(
     "Regwall overview",
     uiOutput("p1_kpis"),
     card_plot("Regwall funnel",
               "Unique readers at each step. Readers matched on anonymous reader ID; verification on account ID.",
-              "p1_funnel", 280),
+              "p1_funnel", 300),
     layout_columns(
       col_widths = c(6, 6),
       card_plot("Performance over time", "Wall views (bars) and registrations (line) by day.", "p1_time"),
-      card_plot("Registration rate by day", "Registered readers / readers who saw the regwall.", "p1_rate")
+      card_plot("Registration rate by day", "Registered readers divided by readers who saw the regwall.", "p1_rate")
     ),
-    h5("New vs returning registrants", class = "mt-3"),
+    tags$h5("New vs returning registrants", class = "section-label mb-0"),
     uiOutput("p1_newret")
   ),
-  
-  # ---- Page 2 ----
+
   nav_panel(
     "Segments and content",
     layout_columns(
       col_widths = c(4, 4, 4),
       card_table("By device", "Device where the reader first saw the regwall.", "p2_device"),
       card_table("By traffic source", "UTM source on the page where the wall appeared.", "p2_source"),
-      card_table("By topic", "Article topic (content_group).", "p2_topic")
+      card_table("By topic", "Article topic (content group).", "p2_topic")
     ),
     card_table("Top pages behind the wall",
-               "Ranked by readers who hit the regwall on that page. Scrolled 90% = reader scrolled to 90% on the same page that day.",
+               "Ranked by readers who hit the regwall. Scrolled 90% means they reached 90% of that page the same day.",
                "p2_pages"),
     layout_columns(
       col_widths = c(6, 6),
       card_plot("Wall hits before registering",
-                "Regwall views per registrant up to registration. 0 = no view on record (tracking gap).", "p2_hist"),
+                "Regwall views per registrant up to registration. 0 means no view on record.", "p2_hist"),
       card_plot("What happened after an email submit",
                 "Readers who entered an email on the regwall.", "p2_outcome")
     )
   ),
-  
-  # ---- Page 3 ----
+
   nav_panel(
     "Softwall and reader value",
     uiOutput("p3_kpis"),
-    card_plot("Softwall funnel", "The dismissible newsletter modal.", "p3_funnel", 240),
+    card_plot("Softwall funnel", "The dismissible newsletter modal.", "p3_funnel", 280),
     layout_columns(
       col_widths = c(6, 6),
-      card_plot("Where registrations come from", "Every registration by sign-up surface, walls included.", "p3_surface", 340),
+      card_plot("Where registrations come from", "Every registration, by sign-up surface.", "p3_surface", 340),
       card_table("Newsletter subscribes",
-                 "Unique readers by list. Unsubscribes show once newsletter_unsubscribe is implemented.", "p3_news")
+                 "Unique readers by list. Unsubscribes appear once that event is tracked.", "p3_news")
     ),
-    card_table("Registered vs anonymous readers on site",
-               "Sessions take their highest status (member > registered > anonymous). Filtered by date range and device.",
+    card_table("Registered vs anonymous readers",
+               "Each session uses its highest status: member, then registered, then anonymous. Filtered by date range and device.",
                "p3_engage"),
     card_plot("Return within 7 days",
-              "Share of sessions followed by another session within 7 days. Only sessions 8+ days old count.",
-              "p3_return", 240),
-    h5("From registration to membership", class = "mt-3"),
+              "Share of sessions followed by another within 7 days. Only sessions at least 8 days old are included.",
+              "p3_return", 260),
+    tags$h5("From registration to membership", class = "section-label mb-0"),
     uiOutput("p3_member")
-  )
+  ),
+  nav_spacer(),
+  nav_item(tags$span(format(DATA$loaded_at, "Updated %b %d, %I:%M %p"), class = "navbar-updated"))
 )
 
 # ---------------------------------------------------------------------
 # Server
 # ---------------------------------------------------------------------
 server <- function(input, output, session) {
-  
-  data <- reactiveVal(load_data())
-  
-  observeEvent(input$refresh, {
-    showNotification("Reloading from BigQuery...", id = "reload", duration = NULL)
-    data(load_data())
-    removeNotification("reload")
-  })
-  
-  output$loaded_at <- renderText(
-    paste("Data loaded", format(data()$loaded_at, "%b %d, %I:%M %p"))
-  )
-  
-  # populate filter choices from the data
-  observeEvent(data(), {
-    f <- data()$funnel
-    opts <- function(x) sort(unique(na.omit(x)))
-    updateSelectizeInput(session, "device", choices = opts(f$device))
-    updateSelectizeInput(session, "page_type", choices = opts(f$page_type))
-    updateSelectizeInput(session, "utm_source", choices = opts(f$utm_source))
-    updateSelectizeInput(session, "variant", choices = opts(f$variant_name))
-  })
-  
-  in_range <- function(d) d >= input$dates[1] & d <= input$dates[2]
+
+  in_range <- function(d) {
+    dates <- input$dates
+    if (is.null(dates) || length(dates) < 2 || anyNA(dates)) return(rep(TRUE, length(d)))
+    if (dates[1] > dates[2]) dates <- rev(dates)
+    d >= dates[1] & d <= dates[2]
+  }
   
   funnel_f <- reactive({
-    f <- data()$funnel |> filter(in_range(event_date))
+    f <- DATA$funnel |> filter(in_range(event_date))
     if (length(input$device))     f <- filter(f, device %in% input$device)
     if (length(input$page_type))  f <- filter(f, page_type %in% input$page_type)
     if (length(input$utm_source)) f <- filter(f, utm_source %in% input$utm_source)
@@ -313,12 +385,12 @@ server <- function(input, output, session) {
   output$p1_kpis <- renderUI({
     s <- funnel_summary(reg())
     layout_column_wrap(
-      width = 1/5,
+      width = 210,
       kpi("Wall views", fmt_n(s$wall_views), "Regwall impressions"),
-      kpi("Readers who hit the wall", fmt_n(s$viewed), "Unique anonymous readers"),
-      kpi("Registrations", fmt_n(s$registered), "Wall-led registration_success"),
+      kpi("Readers", fmt_n(s$viewed), "Unique readers who saw the wall"),
+      kpi("Registrations", fmt_n(s$registered), "Completed from the regwall"),
       kpi("Registration rate", fmt_pct(safe_div(s$registered, s$viewed)), "Registered / saw the wall"),
-      kpi("Verified users", fmt_n(s$verified), "Verified after registering")
+      kpi("Verified", fmt_n(s$verified), "Verified after registering")
     )
   })
   
@@ -363,11 +435,11 @@ server <- function(input, output, session) {
     r <- filter(reg(), registered %in% TRUE)
     med <- suppressWarnings(median(r$days_first_visit_to_reg, na.rm = TRUE))
     layout_column_wrap(
-      width = 1/3,
-      kpi("First-session registrants",
+      width = 220,
+      kpi("First session",
           fmt_n(nd(r$reader_id, r$registrant_visit_type == "first session")),
-          "Registered in their first-ever session"),
-      kpi("Returning registrants",
+          "Registered on their first visit"),
+      kpi("Returning",
           fmt_n(nd(r$reader_id, r$registrant_visit_type == "returning")),
           "Had visited before registering"),
       kpi("Median days to register",
@@ -440,18 +512,18 @@ server <- function(input, output, session) {
     s <- funnel_summary(soft())
     med <- suppressWarnings(median(soft()$seconds_to_dismiss, na.rm = TRUE))
     layout_column_wrap(
-      width = 1/4,
-      kpi("Softwall views", fmt_n(s$wall_views), "Newsletter modal impressions"),
-      kpi("Submit rate", fmt_pct(safe_div(s$submitted, s$viewed)), "Submitted email / saw the wall"),
-      kpi("Dismiss rate", fmt_pct(safe_div(s$dismissed, s$viewed)), "Excludes closing after a submit"),
-      kpi("Seconds to dismiss", if (is.finite(med)) number(med, accuracy = 0.1) else "n/a", "Median, view to dismiss")
+      width = 210,
+      kpi("Softwall views", fmt_n(s$wall_views), "Newsletter modal impressions", tone = "blue"),
+      kpi("Submit rate", fmt_pct(safe_div(s$submitted, s$viewed)), "Submitted email / saw the wall", tone = "blue"),
+      kpi("Dismiss rate", fmt_pct(safe_div(s$dismissed, s$viewed)), "Excludes closing after a submit", tone = "blue"),
+      kpi("Seconds to dismiss", if (is.finite(med)) number(med, accuracy = 0.1) else "n/a", "Median, view to dismiss", tone = "blue")
     )
   })
   
   output$p3_funnel <- renderPlot(funnel_plot(funnel_summary(soft()), BLUE, include_cta = FALSE))
   
   output$p3_surface <- renderPlot({
-    d <- data()$surfaces |>
+    d <- DATA$surfaces |>
       filter(in_range(event_date)) |>
       group_by(surface) |>
       summarise(n = n_distinct(account_key), .groups = "drop") |>
@@ -469,7 +541,7 @@ server <- function(input, output, session) {
   })
   
   output$p3_news <- renderDT({
-    d <- data()$newsletters |>
+    d <- DATA$newsletters |>
       filter(in_range(event_date)) |>
       group_by(Newsletter = newsletter) |>
       summarise(Subscribed = n_distinct(reader_id[event_name == "newsletter_subscribe"]),
@@ -481,7 +553,7 @@ server <- function(input, output, session) {
   })
   
   sessions_f <- reactive({
-    s <- data()$sessions |> filter(in_range(event_date))
+    s <- DATA$sessions |> filter(in_range(event_date))
     if (length(input$device)) s <- filter(s, device %in% input$device)
     s
   })
@@ -524,13 +596,13 @@ server <- function(input, output, session) {
   })
   
   output$p3_member <- renderUI({
-    m <- data()$membership |> filter(reg_date >= input$dates[1], reg_date <= input$dates[2])
+    m <- DATA$membership |> filter(in_range(reg_date))
     layout_column_wrap(
-      width = 1/4,
-      kpi("Registered readers", fmt_n(n_distinct(m$account_key)), "registration_success"),
-      kpi("Viewed checkout", fmt_n(nd(m$account_key, m$viewed_checkout)), "checkout_view after registering"),
-      kpi("Advanced in checkout", fmt_n(nd(m$account_key, m$advanced_checkout)), "checkout_step_advanced"),
-      kpi("Became members", fmt_n(nd(m$account_key, m$became_member)), "subscription_started")
+      width = 210,
+      kpi("Registered readers", fmt_n(n_distinct(m$account_key)), "Signed up in this date range"),
+      kpi("Viewed checkout", fmt_n(nd(m$account_key, m$viewed_checkout)), "Opened checkout after registering"),
+      kpi("Advanced in checkout", fmt_n(nd(m$account_key, m$advanced_checkout)), "Moved past the first step"),
+      kpi("Became members", fmt_n(nd(m$account_key, m$became_member)), "Started a subscription")
     )
   })
 }
