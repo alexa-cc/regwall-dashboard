@@ -3,3 +3,4 @@
 .RData
 *.json
 rsconnect/
+.DS_Store
