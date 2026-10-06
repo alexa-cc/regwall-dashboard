@@ -29,7 +29,6 @@ Sys.setenv(TZ = "America/New_York")   # Cloud Run runs in UTC; match GA4's prope
 
 PROJECT <- "ccc-citycast-prod"
 DATASET <- "dc_mart"
-LAUNCH  <- as.Date("2026-10-05")
 
 # City Cast DC palette. Coral and black, plus a steel blue so chart bars can be told apart.
 RED      <- "#FF6C5E"   # DC coral: regwall series + accents
@@ -147,9 +146,15 @@ PAGE_TYPE_CHOICES <- choice_vals(DATA$funnel$page_type)
 SOURCE_CHOICES    <- choice_vals(DATA$funnel$utm_source)
 VARIANT_CHOICES   <- choice_vals(DATA$funnel$variant_name)
 
-# Yesterday, so the range is never backwards on launch day.
-RANGE_END   <- Sys.Date() - 1
-RANGE_START <- if (RANGE_END < LAUNCH) RANGE_END - 6 else LAUNCH
+# Yesterday's data lands at 9am Eastern. Before that, the latest complete
+# day is the day before yesterday. Default range is the 7 days ending then.
+latest_complete <- function() {
+  now <- Sys.time()
+  lag <- if (as.POSIXlt(now)$hour < 9) 2L else 1L
+  as.Date(now) - lag
+}
+RANGE_END   <- latest_complete()
+RANGE_START <- RANGE_END - 6
 
 # ---------------------------------------------------------------------
 # Helpers
@@ -221,14 +226,15 @@ funnel_plot <- function(s, colors, include_cta = TRUE) {
 }
 
 # KPIs render as cells in a ruled strip (see .kpi-row CSS), not floating boxes.
-kpi <- function(title, value, sub = NULL, tone = c("red", "blue")) {
+kpi <- function(title, value, sub = NULL, tip = NULL, tone = c("red", "blue")) {
   tone <- match.arg(tone)
-  tags$div(
+  cell <- tags$div(
     class = paste("kpi-cell", if (tone == "blue") "kpi-blue"),
-    tags$div(title, class = "kpi-label"),
+    tags$div(title, class = paste("kpi-label", if (!is.null(tip)) "has-tip")),
     tags$div(value, class = "kpi-value"),
     if (!is.null(sub)) tags$div(sub, class = "kpi-sub")
   )
+  if (is.null(tip)) cell else tooltip(cell, tip, placement = "bottom")
 }
 kpi_row <- function(...) tags$div(class = "kpi-row", ...)
 
@@ -265,22 +271,24 @@ theme <- bs_theme(
   heading_font = font_collection(FONT, font_google("Open Sans", wght = c(600)))
 )
 
-card_head <- function(title, note, aside = FALSE) {
+card_head <- function(title, note, aside = FALSE, tip = NULL) {
+  title_el <- tags$div(title, class = paste("card-title", if (!is.null(tip)) "has-tip"))
+  if (!is.null(tip)) title_el <- tooltip(title_el, tip, placement = "bottom")
   card_header(
     class = "bg-transparent",
     tags$div(
       class = paste("card-head-text", if (aside) "card-head-aside"),
-      tags$div(title, class = "card-title"),
+      title_el,
       tags$div(note, class = "card-note")
     )
   )
 }
-card_plot <- function(title, note, id, height = 300, aside = FALSE) {
-  card(class = "dash-card", full_screen = TRUE, card_head(title, note, aside),
+card_plot <- function(title, note, id, height = 300, aside = FALSE, tip = NULL) {
+  card(class = "dash-card", full_screen = TRUE, card_head(title, note, aside, tip),
        card_body(padding = 3, plotOutput(id, height = height)))
 }
-card_table <- function(title, note, id) {
-  card(class = "dash-card", card_head(title, note), card_body(padding = 3, DTOutput(id)))
+card_table <- function(title, note, id, tip = NULL) {
+  card(class = "dash-card", card_head(title, note, tip = tip), card_body(padding = 3, DTOutput(id)))
 }
 
 # Filters sit in a bar above every tab instead of a sidebar.
@@ -292,7 +300,7 @@ filter_bar <- tags$div(
   class = "filter-bar",
   tags$div(class = "filter-wide",
            dateRangeInput("dates", "Date range", start = RANGE_START, end = RANGE_END,
-                          max = Sys.Date(), format = "M dd", separator = " – ",
+                          max = RANGE_END, format = "M dd", separator = " – ",
                           width = "100%")),
   filter_select("device", "Device", DEVICE_CHOICES, "All devices"),
   filter_select("page_type", "Page type", PAGE_TYPE_CHOICES, "All types"),
@@ -376,6 +384,9 @@ dash_css <- "
   .kpi-cell:first-child { border-left: 0; }
   .kpi-value { font-size: 2.75rem; line-height: 1; font-weight: 600; font-variant-numeric: tabular-nums; }
   .kpi-sub { font-size: 0.875rem; line-height: 1.3; }
+  .has-tip { cursor: help; text-decoration: underline dotted; text-underline-offset: 3px; }
+  .tooltip { font-family: Gibson, 'Open Sans', sans-serif; }
+  .tooltip-inner { max-width: 240px; font-size: 0.8rem; font-weight: 400; text-align: left; padding: 0.45rem 0.6rem; }
 
   /* Cards: 2px black rule, 3px radius, no shadow */
   .dash-card { border: 2px solid #000 !important; border-radius: 3px !important; box-shadow: none !important; }
@@ -412,11 +423,13 @@ ui <- page_navbar(
     uiOutput("p1_kpis"),
     card_plot("Regwall funnel",
               "Unique readers at each step. Readers matched on anonymous reader ID; verification on account ID.",
-              "p1_funnel", 300, aside = TRUE),
+              "p1_funnel", 300, aside = TRUE,
+              tip = "Each bar is distinct readers, not views."),
     layout_columns(
       col_widths = c(6, 6),
       card_plot("Performance over time", "Wall views (bars) and registrations (line) by day.", "p1_time"),
-      card_plot("Registration rate by day", "Registered readers divided by readers who saw the regwall.", "p1_rate")
+      card_plot("Registration rate by day", "Registered readers divided by readers who saw the regwall.", "p1_rate",
+                tip = "That day's registrations divided by that day's readers.")
     ),
     tags$h5("New vs returning registrants", class = "section-label mb-0"),
     uiOutput("p1_newret")
@@ -436,7 +449,8 @@ ui <- page_navbar(
     layout_columns(
       col_widths = c(6, 6),
       card_plot("Wall hits before registering",
-                "Regwall views per registrant up to registration. 0 means no view on record.", "p2_hist"),
+                "Regwall views per registrant up to registration. 0 means no view on record.", "p2_hist",
+                tip = "Views per registrant, counted up to the day they registered."),
       card_plot("What happened after an email submit",
                 "Readers who entered an email on the regwall.", "p2_outcome")
     )
@@ -445,19 +459,23 @@ ui <- page_navbar(
   nav_panel(
     "Softwall and reader value",
     uiOutput("p3_kpis"),
-    card_plot("Softwall funnel", "The dismissible newsletter modal.", "p3_funnel", 280),
+    card_plot("Softwall funnel", "The dismissible newsletter modal.", "p3_funnel", 280,
+              tip = "Distinct readers at each step of the modal."),
     layout_columns(
       col_widths = c(6, 6),
-      card_plot("Where registrations come from", "Every registration, by sign-up surface.", "p3_surface", 340),
+      card_plot("Where registrations come from", "Every registration, by sign-up surface.", "p3_surface", 340,
+                tip = "Distinct accounts, one bar per sign-up surface."),
       card_table("Newsletter subscribes",
                  "Unique readers by list. Unsubscribes appear once that event is tracked.", "p3_news")
     ),
     card_table("Registered vs anonymous readers",
                "Each session uses its highest status: member, then registered, then anonymous. Page type, source and variant don't apply here.",
-               "p3_engage"),
+               "p3_engage",
+               tip = "A session's highest status: member, then registered, then anonymous."),
     card_plot("Return within 7 days",
               "Share of sessions followed by another within 7 days. Only sessions at least 8 days old are included.",
-              "p3_return", 260),
+              "p3_return", 260,
+              tip = "Sessions with another visit within 7 days. Sessions under 8 days old are left out."),
     tags$h5("From registration to membership", class = "section-label mb-0"),
     uiOutput("p3_member")
   ),
@@ -492,11 +510,16 @@ server <- function(input, output, session) {
   output$p1_kpis <- renderUI({
     s <- funnel_summary(reg())
     kpi_row(
-      kpi("Wall views", fmt_n(s$wall_views), "Regwall impressions"),
-      kpi("Readers", fmt_n(s$viewed), "Unique readers who saw the wall"),
-      kpi("Registrations", fmt_n(s$registered), "Completed from the regwall"),
-      kpi("Registration rate", fmt_pct(safe_div(s$registered, s$viewed)), "Registered / saw the wall"),
-      kpi("Verified", fmt_n(s$verified), "Verified after registering")
+      kpi("Wall views", fmt_n(s$wall_views), "Regwall impressions",
+          tip = "Sum of impressions. One reader can count more than once."),
+      kpi("Readers", fmt_n(s$viewed), "Unique readers who saw the wall",
+          tip = "Distinct anonymous reader IDs who saw the regwall."),
+      kpi("Registrations", fmt_n(s$registered), "Completed from the regwall",
+          tip = "Distinct readers who registered from the regwall."),
+      kpi("Registration rate", fmt_pct(safe_div(s$registered, s$viewed)), "Registered / saw the wall",
+          tip = "Registrations divided by readers."),
+      kpi("Verified", fmt_n(s$verified), "Verified after registering",
+          tip = "Distinct readers who verified, matched on account ID.")
     )
   })
 
@@ -543,13 +566,16 @@ server <- function(input, output, session) {
     kpi_row(
       kpi("First session",
           fmt_n(nd(r$reader_id, r$registrant_visit_type == "first session")),
-          "Registered on their first visit"),
+          "Registered on their first visit",
+          tip = "Registered on their first visit."),
       kpi("Returning",
           fmt_n(nd(r$reader_id, r$registrant_visit_type == "returning")),
-          "Had visited before registering"),
+          "Had visited before registering",
+          tip = "Had a visit before they registered."),
       kpi("Median days to register",
           if (is.finite(med)) fmt_n(med) else "n/a",
-          "From first visit to registration")
+          "From first visit to registration",
+          tip = "Median days from first visit to registration.")
     )
   })
 
@@ -617,10 +643,14 @@ server <- function(input, output, session) {
     s <- funnel_summary(soft())
     med <- suppressWarnings(median(soft()$seconds_to_dismiss, na.rm = TRUE))
     kpi_row(
-      kpi("Softwall views", fmt_n(s$wall_views), "Newsletter modal impressions", tone = "blue"),
-      kpi("Submit rate", fmt_pct(safe_div(s$submitted, s$viewed)), "Submitted email / saw the wall", tone = "blue"),
-      kpi("Dismiss rate", fmt_pct(safe_div(s$dismissed, s$viewed)), "Excludes closing after a submit", tone = "blue"),
-      kpi("Seconds to dismiss", if (is.finite(med)) number(med, accuracy = 0.1) else "n/a", "Median, view to dismiss", tone = "blue")
+      kpi("Softwall views", fmt_n(s$wall_views), "Newsletter modal impressions", tone = "blue",
+          tip = "Sum of newsletter-modal impressions."),
+      kpi("Submit rate", fmt_pct(safe_div(s$submitted, s$viewed)), "Submitted email / saw the wall", tone = "blue",
+          tip = "Readers who submitted an email, divided by readers who saw the modal."),
+      kpi("Dismiss rate", fmt_pct(safe_div(s$dismissed, s$viewed)), "Excludes closing after a submit", tone = "blue",
+          tip = "Closed the modal, not counting closes after a submit."),
+      kpi("Seconds to dismiss", if (is.finite(med)) number(med, accuracy = 0.1) else "n/a", "Median, view to dismiss", tone = "blue",
+          tip = "Median seconds from seeing the modal to closing it.")
     )
   })
 
@@ -722,10 +752,14 @@ server <- function(input, output, session) {
   output$p3_member <- renderUI({
     m <- DATA$membership |> filter(in_range(reg_date))
     kpi_row(
-      kpi("Registered readers", fmt_n(n_distinct(m$account_key)), "Signed up in this date range"),
-      kpi("Viewed checkout", fmt_n(nd(m$account_key, m$viewed_checkout)), "Opened checkout after registering"),
-      kpi("Advanced in checkout", fmt_n(nd(m$account_key, m$advanced_checkout)), "Moved past the first step"),
-      kpi("Became members", fmt_n(nd(m$account_key, m$became_member)), "Started a subscription")
+      kpi("Registered readers", fmt_n(n_distinct(m$account_key)), "Signed up in this date range",
+          tip = "Distinct accounts that signed up in this range."),
+      kpi("Viewed checkout", fmt_n(nd(m$account_key, m$viewed_checkout)), "Opened checkout after registering",
+          tip = "Opened checkout after registering."),
+      kpi("Advanced in checkout", fmt_n(nd(m$account_key, m$advanced_checkout)), "Moved past the first step",
+          tip = "Got past the first checkout step."),
+      kpi("Became members", fmt_n(nd(m$account_key, m$became_member)), "Started a subscription",
+          tip = "Started a subscription.")
     )
   })
 }
