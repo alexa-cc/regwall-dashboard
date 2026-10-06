@@ -197,6 +197,97 @@ empty_plot <- function(msg = "No data for the selected filters") {
   ggplot() + annotate("text", x = 0, y = 0, label = msg, color = MUTED, size = 4.5) + theme_void()
 }
 
+# Bars and lines are hit-tested as samples in plot coordinates. nearPoints
+# measures distance in pixels, so a sample only at the top of a bar would
+# miss the rest of it.
+line_samples <- function(dates, y, n = 6) {
+  if (length(dates) < 2) return(NULL)
+  x <- as.numeric(dates)
+  ord <- order(x)
+  x <- x[ord]
+  y <- y[ord]
+  dates <- dates[ord]
+  bind_rows(lapply(seq_len(length(x) - 1), function(i) {
+    xs <- seq(x[i], x[i + 1], length.out = n + 2)[-c(1, n + 2)]
+    ys <- seq(y[i], y[i + 1], length.out = n + 2)[-c(1, n + 2)]
+    mid <- (x[i] + x[i + 1]) / 2
+    tibble(
+      tip_date = if_else(xs <= mid, dates[i], dates[i + 1]),
+      x = xs,
+      y = ys
+    )
+  }))
+}
+
+bar_samples <- function(d, n = 12) {
+  x <- as.numeric(d$event_date)
+  bind_rows(lapply(seq_len(nrow(d)), function(i) {
+    hi <- d$views[[i]]
+    if (!is.finite(hi) || hi <= 0) return(NULL)
+    expand_grid(x = x[[i]] + c(-0.32, 0, 0.32), y = seq(0, hi, length.out = n)) |>
+      mutate(tip_date = d$event_date[[i]])
+  }))
+}
+
+time_targets <- function(d) {
+  d <- arrange(d, event_date)
+  k <- max(d$views) / max(1, max(d$registered))
+  y <- d$registered * k
+  bind_rows(
+    tibble(tip_date = d$event_date, x = as.numeric(d$event_date), y = y),
+    line_samples(d$event_date, y),
+    bar_samples(d)
+  )
+}
+
+rate_targets <- function(d) {
+  d <- arrange(d, event_date)
+  bind_rows(
+    tibble(tip_date = d$event_date, x = as.numeric(d$event_date), y = d$rate),
+    line_samples(d$event_date, d$rate)
+  )
+}
+
+hover_hit <- function(hover, targets, threshold = 16) {
+  if (is.null(hover) || is.null(hover$x) || !nrow(targets)) return(NULL)
+  hit <- tryCatch(
+    nearPoints(targets, hover, xvar = "x", yvar = "y",
+               threshold = threshold, maxpoints = 1),
+    error = function(e) NULL
+  )
+  if (is.null(hit) || !nrow(hit)) return(NULL)
+  hit$tip_date[[1]]
+}
+
+tip_line <- function(label, value) {
+  tags$div(class = "plot-tip-row", tags$span(label), tags$span(value))
+}
+
+plot_tip <- function(hover, title, lines) {
+  ratio <- hover$img_css_ratio
+  rx <- if (!is.null(ratio$x)) ratio$x else 1
+  ry <- if (!is.null(ratio$y)) ratio$y else rx
+  x <- hover$coords_css$x
+  y <- hover$coords_css$y
+  mid_x <- ((hover$range$left + hover$range$right) / 2) / rx
+  top_y <- hover$range$top / ry
+  bot_y <- hover$range$bottom / ry
+  place_left <- x > mid_x
+  place_below <- y < top_y + (bot_y - top_y) * 0.34
+  tags$div(
+    class = "plot-tip",
+    style = sprintf(
+      "left:%.1fpx;top:%.1fpx;transform:translate(%s,%s);",
+      x + if (place_left) -14 else 14,
+      y + if (place_below) 16 else -14,
+      if (place_left) "-100%" else "0",
+      if (place_below) "0" else "-100%"
+    ),
+    tags$div(title, class = "plot-tip-title"),
+    lines
+  )
+}
+
 funnel_plot <- function(s, colors, include_cta = TRUE) {
   steps <- tibble(
     step = c("Saw the wall", "Clicked CTA", "Submitted email", "Registered", "Verified"),
@@ -283,9 +374,15 @@ card_head <- function(title, note, aside = FALSE, tip = NULL) {
     )
   )
 }
-card_plot <- function(title, note, id, height = 300, aside = FALSE, tip = NULL) {
+card_plot <- function(title, note, id, height = 300, aside = FALSE, tip = NULL, hover = FALSE) {
+  plot <- plotOutput(
+    id, height = height,
+    hover = if (hover) hoverOpts(paste0(id, "_hover"), delay = 40,
+                                 delayType = "throttle", nullOutside = TRUE)
+  )
+  body <- if (hover) tags$div(class = "plot-hover-wrap", plot, uiOutput(paste0(id, "_tip"))) else plot
   card(class = "dash-card", full_screen = TRUE, card_head(title, note, aside, tip),
-       card_body(padding = 3, plotOutput(id, height = height)))
+       card_body(padding = 3, body))
 }
 card_table <- function(title, note, id, tip = NULL) {
   card(class = "dash-card", card_head(title, note, tip = tip), card_body(padding = 3, DTOutput(id)))
@@ -405,6 +502,22 @@ dash_css <- "
   table.dataTable tbody tr:hover > * { background: #FF6C5E !important; box-shadow: none !important; }
   .dataTables_paginate .paginate_button.current { background: #000 !important; color: #fff !important;
                                                   border-radius: 3px; border: 0 !important; }
+
+  .plot-hover-wrap { position: relative; }
+  .plot-hover-wrap > .shiny-html-output {
+    position: absolute; inset: 0; pointer-events: none; overflow: visible;
+  }
+  .plot-tip {
+    position: absolute; z-index: 30; pointer-events: none;
+    background: #fff; color: #000; border: 2px solid #000; border-radius: 3px;
+    padding: 8px 10px; min-width: 148px;
+  }
+  .plot-tip-title { font-weight: 600; font-size: 0.8rem; margin-bottom: 4px; }
+  .plot-tip-row {
+    display: flex; justify-content: space-between; gap: 16px;
+    font-size: 0.8rem; line-height: 1.35;
+  }
+  .plot-tip-row span:last-child { font-weight: 600; font-variant-numeric: tabular-nums; }
 "
 theme <- bs_add_rules(theme, dash_css)
 
@@ -427,9 +540,10 @@ ui <- page_navbar(
               tip = "Each bar is distinct readers, not views."),
     layout_columns(
       col_widths = c(6, 6),
-      card_plot("Performance over time", "Wall views (bars) and registrations (line) by day.", "p1_time"),
+      card_plot("Performance over time", "Wall views (bars) and registrations (line) by day.", "p1_time",
+                hover = TRUE),
       card_plot("Registration rate by day", "Registered readers divided by readers who saw the regwall.", "p1_rate",
-                tip = "That day's registrations divided by that day's readers.")
+                tip = "That day's registrations divided by that day's readers.", hover = TRUE)
     ),
     tags$h5("New vs returning registrants", class = "section-label mb-0"),
     uiOutput("p1_newret")
@@ -559,6 +673,35 @@ server <- function(input, output, session) {
       scale_x_date(NULL, date_labels = "%b %d") +
       theme_dash()
   }, res = 96)
+
+  output$p1_time_tip <- renderUI({
+    hover <- input$p1_time_hover
+    d <- daily_reg()
+    if (is.null(hover) || !nrow(d)) return(NULL)
+    day <- hover_hit(hover, time_targets(d))
+    if (is.null(day)) return(NULL)
+    row <- d[d$event_date == day, ]
+    if (!nrow(row)) return(NULL)
+    plot_tip(hover, format(row$event_date[1], "%b %d"), list(
+      tip_line("Wall views", fmt_n(row$views[1])),
+      tip_line("Registrations", fmt_n(row$registered[1]))
+    ))
+  })
+
+  output$p1_rate_tip <- renderUI({
+    hover <- input$p1_rate_hover
+    d <- filter(daily_reg(), !is.na(rate))
+    if (is.null(hover) || !nrow(d)) return(NULL)
+    day <- hover_hit(hover, rate_targets(d))
+    if (is.null(day)) return(NULL)
+    row <- d[d$event_date == day, ]
+    if (!nrow(row)) return(NULL)
+    plot_tip(hover, format(row$event_date[1], "%b %d"), list(
+      tip_line("Registration rate", fmt_pct(row$rate[1])),
+      tip_line("Registered", fmt_n(row$registered[1])),
+      tip_line("Readers", fmt_n(row$readers[1]))
+    ))
+  })
 
   output$p1_newret <- renderUI({
     r <- filter(reg(), registered %in% TRUE)
