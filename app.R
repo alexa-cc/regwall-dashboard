@@ -594,7 +594,7 @@ ui <- page_navbar(
     uiOutput("p3_member")
   ),
   nav_spacer(),
-  nav_item(tags$span(format(DATA$loaded_at, "Updated %b %d, %I:%M %p"), class = "navbar-updated"))
+  nav_item(tags$span(format(DATA$loaded_at, "Updated %b %d, %I:%M %p ET"), class = "navbar-updated"))
 )
 
 # ---------------------------------------------------------------------
